@@ -46,8 +46,8 @@ A comprehensive bash script for viewing Proxmox update log entries with flexible
 #### Method 1: Clone Repository
 ```bash
 # Clone the repository
-git clone https://github.com/YOUR_USERNAME/proxmox-update-log-viewer.git
-cd proxmox-update-log-viewer
+git clone https://github.com/vehask/view-update-log.git
+cd view-update-log-viewer
 
 # Run automated installer
 sudo ./install.sh
