@@ -426,4 +426,9 @@ For issues or feature requests:
 
 ---
 
+<<<<<<< HEAD
 **Made with ❤️ for the Proxmox community**
+=======
+**Made with ❤️ for the Proxmox community**
+
+>>>>>>> 6918f9a020990cca830451709d67ecf0f88d0563
