@@ -56,17 +56,16 @@ sudo ./install.sh
 #### Method 2: Direct Download and Install
 ```bash
 # Download and install in one command
-curl -sSL https://raw.githubusercontent.com/YOUR_USERNAME/proxmox-update-log-viewer/main/view-update-log.sh -o view-update-log.sh && \
+curl -sSL https://raw.githubusercontent.com/vehask/view-update-log/main/view-update-log.sh -o view-update-log.sh && \
 sudo cp view-update-log.sh /usr/local/bin/ && \
 sudo chmod +x /usr/local/bin/view-update-log.sh && \
-sudo ln -sf /usr/local/bin/view-update-log.sh /usr/local/bin/view-update-log && \
-echo "Installation complete! Run 'view-update-log --help' to get started."
+echo "Installation complete! Run './view-update-log.sh --help' to get started."
 ```
 
 #### Method 3: Download and Run Locally
 ```bash
 # Download script
-curl -sSL https://raw.githubusercontent.com/YOUR_USERNAME/proxmox-update-log-viewer/main/view-update-log.sh -o view-update-log.sh
+curl -sSL https://raw.githubusercontent.com/vehask/view-update-log/main/view-update-log.sh -o view-update-log.sh
 
 # Make executable
 chmod +x view-update-log.sh
@@ -84,10 +83,6 @@ chmod +x view-update-log.sh
 sudo cp view-update-log.sh /usr/local/bin/
 sudo chmod +x /usr/local/bin/view-update-log.sh
 
-# Create symlink for easy access
-sudo ln -sf /usr/local/bin/view-update-log.sh /usr/local/bin/view-update-log
-```
-
 #### Option 2: Local Installation
 
 ```bash
@@ -102,12 +97,12 @@ chmod +x view-update-log.sh
 
 ```bash
 # Create scripts directory
-mkdir -p /opt/scripts
-sudo cp view-update-log.sh /opt/scripts/
-sudo chmod +x /opt/scripts/view-update-log.sh
+mkdir -p /path/to/scripts
+sudo cp view-update-log.sh /path/to/scripts
+sudo chmod +x /path/to/view-update-log.sh
 
 # Add to PATH (optional)
-echo 'export PATH="/opt/scripts:$PATH"' >> ~/.bashrc
+echo 'export PATH="/path/to/scripts:$PATH"' >> ~/.bashrc
 source ~/.bashrc
 ```
 
