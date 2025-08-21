@@ -12,6 +12,7 @@ A comprehensive bash script for viewing Proxmox update log entries with flexible
 - **🎨 Enhanced Color Coding**: Intelligent color highlighting for different log types and operations
 - **📝 Line Numbering**: Sequential numbering of filtered entries for easy reference
 - **🐳 Docker Compose Support**: Special highlighting for container operations (pulling, running, cleanup)
+- **🔍 Docker Pull Filtering**: Show logs only from days when Docker pulls occurred with `--last-pull`
 - **🌍 Multi-Timezone Support**: Handles both 12-hour/24-hour formats across different timezones
 - **📋 Package Operation Highlighting**: Clear visual indicators for system updates and package changes
 - **⚙️ Multiple Time Options**: Hours, days, minutes, or specific timestamps
@@ -46,8 +47,8 @@ A comprehensive bash script for viewing Proxmox update log entries with flexible
 #### Method 1: Clone Repository
 ```bash
 # Clone the repository
-git clone https://github.com/YOUR_USERNAME/proxmox-update-log-viewer.git
-cd proxmox-update-log-viewer
+git clone https://github.com/vehask/view-update-log.git
+cd view-update-log
 
 # Run automated installer
 sudo ./install.sh
@@ -56,17 +57,16 @@ sudo ./install.sh
 #### Method 2: Direct Download and Install
 ```bash
 # Download and install in one command
-curl -sSL https://raw.githubusercontent.com/YOUR_USERNAME/proxmox-update-log-viewer/main/view-update-log.sh -o view-update-log.sh && \
+curl -sSL https://raw.githubusercontent.com/vehask/view-update-log/main/view-update-log.sh -o view-update-log.sh && \
 sudo cp view-update-log.sh /usr/local/bin/ && \
 sudo chmod +x /usr/local/bin/view-update-log.sh && \
-sudo ln -sf /usr/local/bin/view-update-log.sh /usr/local/bin/view-update-log && \
-echo "Installation complete! Run 'view-update-log --help' to get started."
+echo "Installation complete! Run './view-update-log.sh --help' to get started."
 ```
 
 #### Method 3: Download and Run Locally
 ```bash
 # Download script
-curl -sSL https://raw.githubusercontent.com/YOUR_USERNAME/proxmox-update-log-viewer/main/view-update-log.sh -o view-update-log.sh
+curl -sSL https://raw.githubusercontent.com/vehask/view-update-log/main/view-update-log.sh -o view-update-log.sh
 
 # Make executable
 chmod +x view-update-log.sh
@@ -84,10 +84,6 @@ chmod +x view-update-log.sh
 sudo cp view-update-log.sh /usr/local/bin/
 sudo chmod +x /usr/local/bin/view-update-log.sh
 
-# Create symlink for easy access
-sudo ln -sf /usr/local/bin/view-update-log.sh /usr/local/bin/view-update-log
-```
-
 #### Option 2: Local Installation
 
 ```bash
@@ -102,12 +98,12 @@ chmod +x view-update-log.sh
 
 ```bash
 # Create scripts directory
-mkdir -p /opt/scripts
-sudo cp view-update-log.sh /opt/scripts/
-sudo chmod +x /opt/scripts/view-update-log.sh
+mkdir -p /path/to/scripts
+sudo cp view-update-log.sh /path/to/scripts
+sudo chmod +x /path/to/view-update-log.sh
 
 # Add to PATH (optional)
-echo 'export PATH="/opt/scripts:$PATH"' >> ~/.bashrc
+echo 'export PATH="/path/to/scripts:$PATH"' >> ~/.bashrc
 source ~/.bashrc
 ```
 
@@ -158,6 +154,19 @@ sudo ./install.sh
 ./view-update-log.sh --since "2025-01-20" --until "2025-01-22"
 ```
 
+### Docker Pull Filtering
+
+```bash
+# View logs from the last day when Docker pulls occurred
+./view-update-log.sh --last-pull
+
+# View logs from the last 3 days when Docker pulls occurred
+./view-update-log.sh --last-pull 3
+
+# View logs from the last 5 days when Docker pulls occurred
+./view-update-log.sh --last-pull 5
+```
+
 ### Display Options
 
 ```bash
@@ -206,13 +215,16 @@ The script automatically detects and parses various timestamp formats from Proxm
 ### Header Formats
 - **Equal signs**: `==== Thu Jul 17 05:00:01 AM CEST 2025 ====`
 - **Hash symbols**: `########## Wed Jul 23 17:30:15 UTC 2025 ##########`
+- **Docker CTs**: `########## System & Docker Update Thu Aug 21 05:00:01 AM CEST 2025 ##########`
 
 ### Examples of Supported Headers
 ```
-==== Thu Jul 17 05:00:01 AM CEST 2025 ====     (12-hour with CEST)
-==== Thu Jul 17 17:00:01 UTC 2025 ====         (24-hour with UTC)
-########## Wed Jul 23 14:30:15 CET 2025 ##########  (24-hour with CET)
-########## Wed Jul 23 09:15:30 PM EST 2025 ########## (12-hour with EST)
+==== Thu Jul 17 05:00:01 AM CEST 2025 ====                                    (12-hour with CEST)
+==== Thu Jul 17 17:00:01 UTC 2025 ====                                        (24-hour with UTC)
+########## Wed Jul 23 14:30:15 CET 2025 ##########                             (24-hour with CET)
+########## Wed Jul 23 09:15:30 PM EST 2025 ##########                          (12-hour with EST)
+########## System & Docker Update Thu Aug 21 05:00:01 AM CEST 2025 ##########  (Docker CT with prefix)
+########## Docker Update Fri 22 Aug 17:00:01 UTC 2025 ##########               (Docker CT 24-hour)
 ```
 
 ## Command-Line Timestamp Formats
@@ -379,7 +391,20 @@ For issues or feature requests:
 
 ## Changelog
 
-### v1.2 (Latest)
+### v1.4 (Latest)
+- 🔍 **Docker Pull Filtering**: New `--last-pull` option to show logs only from days when Docker pulls occurred
+- 📊 **Smart Day Selection**: `--last-pull N` shows the N most recent days with Docker pull operations
+- 🎯 **Precise Filtering**: Automatically detects "pulling" and "pulled" keywords in log entries
+- ⚡ **Enhanced Logic**: Complete day filtering ensures you see all activities from pull days
+- 📋 **Updated Help**: Comprehensive examples and documentation for the new feature
+
+### v1.3
+-  **Docker CT Support**: Fixed timestamp parsing for Docker Container Templates with prefixed headers
+- 🔧 **Enhanced Regex Patterns**: Support for headers like "System & Docker Update Thu Aug 21..."
+- 🔍 **Improved Detection**: Better handling of optional prefix text in timestamp headers
+- ✅ **Cross-Platform Compatibility**: Works seamlessly on VMs, CTs, and Docker CTs
+
+### v1.2
 - ✨ **Docker Compose Support**: Added specialized color highlighting for container operations
 - 🎨 **Enhanced Color Scheme**: Orange headers, yellow package operations, green completions
 - 🌍 **Improved Timezone Support**: Better handling of Day-Month vs Month-Day date formats

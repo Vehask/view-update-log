@@ -1,13 +1,13 @@
 #!/bin/bash
 
 # ╭─────────────────────────────────────────────────────────────╮
-# │                  Proxmox Update Log Viewer                 │
+# │                  Proxmox Update Log Viewer                  │
 # │                                                             │
-# │  Description: Display update log entries with flexible     │
-# │               time ranges, colored output, and line numbers│
-# │  Author: Kilo Code                                          │
-# │  Version: 1.0                                               │
-# │  Usage: ./view-update-log.sh [OPTIONS]                     │
+# │  Description: Display update log entries with flexible      │
+# │               time ranges, colored output, and line numbers │
+# │                                                             │
+# │  Usage: ./view-update-log.sh [OPTIONS]                      │
+# │  Options: [Global Variables - Line 31]                      │
 # ╰─────────────────────────────────────────────────────────────╯
 
 # Default configuration
@@ -34,10 +34,14 @@ DAYS=""
 MINUTES=""
 SINCE=""
 UNTIL=""
+LAST_PULL=""
 NO_COLOR=false
 NO_LINE_NUMBERS=false
 QUIET=false
 SHOW_HELP=false
+
+# Global variable to store pull days for filtering
+PULL_DAYS_FILTER=()
 
 # Function to display usage information
 display_usage() {
@@ -57,6 +61,7 @@ ${BOLD}TIME RANGE OPTIONS:${NC}
     --minutes <number>      Show entries from the past N minutes
     --since <timestamp>     Show entries since specific date/time
     --until <timestamp>     Show entries until specific date/time
+    --last-pull [number]    Show entries from days with Docker updates (default: 1, last update day)
 
 ${BOLD}DISPLAY OPTIONS:${NC}
     --no-color             Disable colored output
@@ -75,6 +80,8 @@ ${BOLD}EXAMPLES:${NC}
     $SCRIPT_NAME --hours 12                # Last 12 hours
     $SCRIPT_NAME --days 3                  # Last 3 days
     $SCRIPT_NAME --minutes 30              # Last 30 minutes
+    $SCRIPT_NAME --last-pull               # Last day with Docker updates
+    $SCRIPT_NAME --last-pull 3             # Last 3 days with Docker updates
     $SCRIPT_NAME --since "2025-01-20 10:00:00"
     $SCRIPT_NAME --until "2025-01-23 12:00:00"
     $SCRIPT_NAME --days 1 --no-color      # Last day without colors
@@ -124,11 +131,12 @@ validate_arguments() {
     [[ -n "$DAYS" ]] && ((time_options++))
     [[ -n "$MINUTES" ]] && ((time_options++))
     [[ -n "$SINCE" || -n "$UNTIL" ]] && ((time_options++))
+    [[ -n "$LAST_PULL" ]] && ((time_options++))
     
     # Check for conflicting time options
     if [[ $time_options -gt 1 ]]; then
         print_error "Cannot combine multiple time range options"
-        print_error "Use either --hours, --days, --minutes, or --since/--until"
+        print_error "Use either --hours, --days, --minutes, --since/--until, or --last-pull"
         return 2
     fi
     
@@ -145,6 +153,11 @@ validate_arguments() {
     
     if [[ -n "$MINUTES" ]] && ! [[ "$MINUTES" =~ ^[0-9]+$ ]]; then
         print_error "Minutes must be a positive integer"
+        return 2
+    fi
+    
+    if [[ -n "$LAST_PULL" ]] && ! [[ "$LAST_PULL" =~ ^[0-9]+$ ]]; then
+        print_error "Last-pull count must be a positive integer"
         return 2
     fi
     
@@ -198,6 +211,16 @@ parse_arguments() {
                 UNTIL="$2"
                 shift 2
                 ;;
+            --last-pull)
+                # Check if next argument is a number or another option
+                if [[ $# -gt 1 && "$2" =~ ^[0-9]+$ ]]; then
+                    LAST_PULL="$2"
+                    shift 2
+                else
+                    LAST_PULL="1"  # Default to 1 if no number provided
+                    shift
+                fi
+                ;;
             --no-color)
                 NO_COLOR=true
                 shift
@@ -228,6 +251,34 @@ parse_arguments() {
 # Function to calculate time cutoff
 calculate_time_cutoff() {
     local cutoff_timestamp
+    
+    if [[ -n "$LAST_PULL" ]]; then
+        # Handle --last-pull option
+        local pull_days
+        mapfile -t pull_days < <(find_pull_days "$LAST_PULL")
+        
+        
+        if [[ ${#pull_days[@]} -eq 0 ]]; then
+            print_error "No days with Docker pulls found in log file"
+            return 1
+        fi
+        
+        # Store pull days for filtering in process_log_entries
+        PULL_DAYS_FILTER=("${pull_days[@]}")
+        
+        
+        # Get the oldest day from our selection (last element since they're sorted newest first)
+        local oldest_day="${pull_days[-1]}"
+        
+        # Convert to timestamp at start of day (00:00:00)
+        cutoff_timestamp=$(date -d "$oldest_day 00:00:00" +%s 2>/dev/null)
+        if [[ $? -ne 0 ]]; then
+            print_error "Failed to parse oldest pull day: $oldest_day"
+            return 1
+        fi
+        echo "$cutoff_timestamp"
+        return 0
+    fi
     
     if [[ -n "$SINCE" ]]; then
         cutoff_timestamp=$(date -d "$SINCE" +%s 2>/dev/null)
@@ -281,6 +332,59 @@ get_until_timestamp() {
     fi
 }
 
+# Function to find days with Docker updates
+find_pull_days() {
+    local count="$1"
+    local pull_days=()
+    local current_date=""
+    local found_pull=false
+    
+    # Read through the log file to find days with pulls
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        # Check if this line is a timestamp header
+        local log_timestamp
+        log_timestamp=$(parse_log_timestamp "$line")
+        
+        if [[ $? -eq 0 ]]; then
+            # Convert timestamp to date (YYYY-MM-DD format)
+            local date_str
+            date_str=$(date -d "@$log_timestamp" +%Y-%m-%d 2>/dev/null)
+            
+            if [[ $? -eq 0 ]]; then
+                # If we found a pull in the previous date, add it to the array
+                if [[ "$found_pull" == true && -n "$current_date" ]]; then
+                    pull_days+=("$current_date")
+                fi
+                
+                # Reset for new date
+                current_date="$date_str"
+                found_pull=false
+            fi
+        elif [[ "$line" =~ [Pp]ull\ [Cc]omplete|[Dd]ownload\ [Cc]omplete ]]; then
+            # Found a pull/download complete operation in current date
+            found_pull=true
+        fi
+        
+    done < "$LOG_FILE"
+    
+    # Don't forget the last date if it had pulls
+    if [[ "$found_pull" == true && -n "$current_date" ]]; then
+        pull_days+=("$current_date")
+    fi
+    
+    # Remove duplicates and sort in reverse order (newest first)
+    local unique_days=($(printf '%s\n' "${pull_days[@]}" | sort -u -r))
+    
+    # Return the requested number of days
+    local result_days=()
+    for ((i=0; i<count && i<${#unique_days[@]}; i++)); do
+        result_days+=("${unique_days[i]}")
+    done
+    
+    # Output the days (space-separated)
+    printf '%s\n' "${result_days[@]}"
+}
+
 # Function to parse log timestamp
 parse_log_timestamp() {
     local line="$1"
@@ -289,35 +393,39 @@ parse_log_timestamp() {
     # Try to extract timestamp from update log section headers
     # Support both 12-hour and 24-hour formats with various timezones
     # Handle both "Day Mon DD" and "Day DD Mon" date orderings
+    # Handle optional prefix text (like "System & Docker Update")
     
-    # Format 1: ==== Day Mon DD HH:MM:SS AM/PM TIMEZONE YYYY ====  (12-hour, Month-Day order)
-    if [[ "$line" =~ ^=+[[:space:]]*([A-Za-z]{3}[[:space:]]+[A-Za-z]{3}[[:space:]]+[0-9]{1,2}[[:space:]]+[0-9]{2}:[0-9]{2}:[0-9]{2}[[:space:]]+[AP]M[[:space:]]+[A-Za-z0-9+/-]{2,5}[[:space:]]+[0-9]{4})[[:space:]]*=+$ ]]; then
+    # Format 1: ==== [Optional Text] Day Mon DD HH:MM:SS AM/PM TIMEZONE YYYY ====  (12-hour, Month-Day order)
+    if [[ "$line" =~ ^=+[[:space:]]*.*([A-Za-z]{3}[[:space:]]+[A-Za-z]{3}[[:space:]]+[0-9]{1,2}[[:space:]]+[0-9]{2}:[0-9]{2}:[0-9]{2}[[:space:]]+[AP]M[[:space:]]+[A-Za-z0-9+/-]{2,5}[[:space:]]+[0-9]{4})[[:space:]]*=+$ ]]; then
         timestamp="${BASH_REMATCH[1]}"
-    # Format 2: ==== Day DD Mon HH:MM:SS AM/PM TIMEZONE YYYY ====  (12-hour, Day-Month order)
-    elif [[ "$line" =~ ^=+[[:space:]]*([A-Za-z]{3}[[:space:]]+[0-9]{1,2}[[:space:]]+[A-Za-z]{3}[[:space:]]+[0-9]{2}:[0-9]{2}:[0-9]{2}[[:space:]]+[AP]M[[:space:]]+[A-Za-z0-9+/-]{2,5}[[:space:]]+[0-9]{4})[[:space:]]*=+$ ]]; then
+    # Format 2: ==== [Optional Text] Day DD Mon HH:MM:SS AM/PM TIMEZONE YYYY ====  (12-hour, Day-Month order)
+    elif [[ "$line" =~ ^=+[[:space:]]*.*([A-Za-z]{3}[[:space:]]+[0-9]{1,2}[[:space:]]+[A-Za-z]{3}[[:space:]]+[0-9]{2}:[0-9]{2}:[0-9]{2}[[:space:]]+[AP]M[[:space:]]+[A-Za-z0-9+/-]{2,5}[[:space:]]+[0-9]{4})[[:space:]]*=+$ ]]; then
         timestamp="${BASH_REMATCH[1]}"
-    # Format 3: ==== Day Mon DD HH:MM:SS TIMEZONE YYYY ====  (24-hour, Month-Day order)
-    elif [[ "$line" =~ ^=+[[:space:]]*([A-Za-z]{3}[[:space:]]+[A-Za-z]{3}[[:space:]]+[0-9]{1,2}[[:space:]]+[0-9]{2}:[0-9]{2}:[0-9]{2}[[:space:]]+[A-Za-z0-9+/-]{2,5}[[:space:]]+[0-9]{4})[[:space:]]*=+$ ]]; then
+    # Format 3: ==== [Optional Text] Day Mon DD HH:MM:SS TIMEZONE YYYY ====  (24-hour, Month-Day order)
+    elif [[ "$line" =~ ^=+[[:space:]]*.*([A-Za-z]{3}[[:space:]]+[A-Za-z]{3}[[:space:]]+[0-9]{1,2}[[:space:]]+[0-9]{2}:[0-9]{2}:[0-9]{2}[[:space:]]+[A-Za-z0-9+/-]{2,5}[[:space:]]+[0-9]{4})[[:space:]]*=+$ ]]; then
         timestamp="${BASH_REMATCH[1]}"
-    # Format 4: ==== Day DD Mon HH:MM:SS TIMEZONE YYYY ====  (24-hour, Day-Month order)
-    elif [[ "$line" =~ ^=+[[:space:]]*([A-Za-z]{3}[[:space:]]+[0-9]{1,2}[[:space:]]+[A-Za-z]{3}[[:space:]]+[0-9]{2}:[0-9]{2}:[0-9]{2}[[:space:]]+[A-Za-z0-9+/-]{2,5}[[:space:]]+[0-9]{4})[[:space:]]*=+$ ]]; then
+    # Format 4: ==== [Optional Text] Day DD Mon HH:MM:SS TIMEZONE YYYY ====  (24-hour, Day-Month order)
+    elif [[ "$line" =~ ^=+[[:space:]]*.*([A-Za-z]{3}[[:space:]]+[0-9]{1,2}[[:space:]]+[A-Za-z]{3}[[:space:]]+[0-9]{2}:[0-9]{2}:[0-9]{2}[[:space:]]+[A-Za-z0-9+/-]{2,5}[[:space:]]+[0-9]{4})[[:space:]]*=+$ ]]; then
         timestamp="${BASH_REMATCH[1]}"
-    # Format 5: ########## Day Mon DD HH:MM:SS AM/PM TIMEZONE YYYY ##########  (12-hour, Month-Day order)
-    elif [[ "$line" =~ ^#+[[:space:]]*([A-Za-z]{3}[[:space:]]+[A-Za-z]{3}[[:space:]]+[0-9]{1,2}[[:space:]]+[0-9]{2}:[0-9]{2}:[0-9]{2}[[:space:]]+[AP]M[[:space:]]+[A-Za-z0-9+/-]{2,5}[[:space:]]+[0-9]{4})[[:space:]]*#+$ ]]; then
+    # Format 5: ########## [Optional Text] Day Mon DD HH:MM:SS AM/PM TIMEZONE YYYY ##########  (12-hour, Month-Day order)
+    elif [[ "$line" =~ ^#+[[:space:]]*.*([A-Za-z]{3}[[:space:]]+[A-Za-z]{3}[[:space:]]+[0-9]{1,2}[[:space:]]+[0-9]{2}:[0-9]{2}:[0-9]{2}[[:space:]]+[AP]M[[:space:]]+[A-Za-z0-9+/-]{2,5}[[:space:]]+[0-9]{4})[[:space:]]*#+$ ]]; then
         timestamp="${BASH_REMATCH[1]}"
-    # Format 6: ########## Day DD Mon HH:MM:SS AM/PM TIMEZONE YYYY ##########  (12-hour, Day-Month order)
-    elif [[ "$line" =~ ^#+[[:space:]]*([A-Za-z]{3}[[:space:]]+[0-9]{1,2}[[:space:]]+[A-Za-z]{3}[[:space:]]+[0-9]{2}:[0-9]{2}:[0-9]{2}[[:space:]]+[AP]M[[:space:]]+[A-Za-z0-9+/-]{2,5}[[:space:]]+[0-9]{4})[[:space:]]*#+$ ]]; then
+    # Format 6: ########## [Optional Text] Day DD Mon HH:MM:SS AM/PM TIMEZONE YYYY ##########  (12-hour, Day-Month order)
+    elif [[ "$line" =~ ^#+[[:space:]]*.*([A-Za-z]{3}[[:space:]]+[0-9]{1,2}[[:space:]]+[A-Za-z]{3}[[:space:]]+[0-9]{2}:[0-9]{2}:[0-9]{2}[[:space:]]+[AP]M[[:space:]]+[A-Za-z0-9+/-]{2,5}[[:space:]]+[0-9]{4})[[:space:]]*#+$ ]]; then
         timestamp="${BASH_REMATCH[1]}"
-    # Format 7: ########## Day Mon DD HH:MM:SS TIMEZONE YYYY ##########  (24-hour, Month-Day order)
-    elif [[ "$line" =~ ^#+[[:space:]]*([A-Za-z]{3}[[:space:]]+[A-Za-z]{3}[[:space:]]+[0-9]{1,2}[[:space:]]+[0-9]{2}:[0-9]{2}:[0-9]{2}[[:space:]]+[A-Za-z0-9+/-]{2,5}[[:space:]]+[0-9]{4})[[:space:]]*#+$ ]]; then
+    # Format 7: ########## [Optional Text] Day Mon DD HH:MM:SS TIMEZONE YYYY ##########  (24-hour, Month-Day order)
+    elif [[ "$line" =~ ^#+[[:space:]]*.*([A-Za-z]{3}[[:space:]]+[A-Za-z]{3}[[:space:]]+[0-9]{1,2}[[:space:]]+[0-9]{2}:[0-9]{2}:[0-9]{2}[[:space:]]+[A-Za-z0-9+/-]{2,5}[[:space:]]+[0-9]{4})[[:space:]]*#+$ ]]; then
         timestamp="${BASH_REMATCH[1]}"
-    # Format 8: ########## Day DD Mon HH:MM:SS TIMEZONE YYYY ##########  (24-hour, Day-Month order)
-    elif [[ "$line" =~ ^#+[[:space:]]*([A-Za-z]{3}[[:space:]]+[0-9]{1,2}[[:space:]]+[A-Za-z]{3}[[:space:]]+[0-9]{2}:[0-9]{2}:[0-9]{2}[[:space:]]+[A-Za-z0-9+/-]{2,5}[[:space:]]+[0-9]{4})[[:space:]]*#+$ ]]; then
+    # Format 8: ########## [Optional Text] Day DD Mon HH:MM:SS TIMEZONE YYYY ##########  (24-hour, Day-Month order)
+    elif [[ "$line" =~ ^#+[[:space:]]*.*([A-Za-z]{3}[[:space:]]+[0-9]{1,2}[[:space:]]+[A-Za-z]{3}[[:space:]]+[0-9]{2}:[0-9]{2}:[0-9]{2}[[:space:]]+[A-Za-z0-9+/-]{2,5}[[:space:]]+[0-9]{4})[[:space:]]*#+$ ]]; then
         timestamp="${BASH_REMATCH[1]}"
-    # Format 9: [YYYY-MM-DD HH:MM:SS] (fallback)
+    # Format 9: ############## [Text] at Day Mon DD HH:MM:SS TIMEZONE YYYY ##############  (Special "at" format)
+    elif [[ "$line" =~ ^#+.*[[:space:]]at[[:space:]]+([A-Za-z]{3}[[:space:]]+[A-Za-z]{3}[[:space:]]+[0-9]{1,2}[[:space:]]+[0-9]{2}:[0-9]{2}:[0-9]{2}[[:space:]]+[A-Za-z0-9+/-]{2,5}[[:space:]]+[0-9]{4})[[:space:]]*#+$ ]]; then
+        timestamp="${BASH_REMATCH[1]}"
+    # Format 10: [YYYY-MM-DD HH:MM:SS] (fallback)
     elif [[ "$line" =~ \[([0-9]{4}-[0-9]{2}-[0-9]{2}[[:space:]]+[0-9]{2}:[0-9]{2}:[0-9]{2})\] ]]; then
         timestamp="${BASH_REMATCH[1]}"
-    # Format 10: YYYY-MM-DD HH:MM:SS (fallback)
+    # Format 11: YYYY-MM-DD HH:MM:SS (fallback)
     elif [[ "$line" =~ ^([0-9]{4}-[0-9]{2}-[0-9]{2}[[:space:]]+[0-9]{2}:[0-9]{2}:[0-9]{2}) ]]; then
         timestamp="${BASH_REMATCH[1]}"
     else
@@ -469,7 +577,13 @@ display_header() {
     local to_time
     
     # Determine time range description
-    if [[ -n "$SINCE" && -n "$UNTIL" ]]; then
+    if [[ -n "$LAST_PULL" ]]; then
+        if [[ "$LAST_PULL" -eq 1 ]]; then
+            time_range_text="Last day with Docker updates"
+        else
+            time_range_text="Last $LAST_PULL days with Docker updates"
+        fi
+    elif [[ -n "$SINCE" && -n "$UNTIL" ]]; then
         time_range_text="From $SINCE to $UNTIL"
     elif [[ -n "$SINCE" ]]; then
         time_range_text="Since $SINCE"
@@ -548,9 +662,33 @@ process_log_entries() {
     local current_section_within_range=false
     
     # Calculate time boundaries
-    cutoff_timestamp=$(calculate_time_cutoff)
-    if [[ $? -ne 0 ]]; then
-        return 1
+    if [[ -n "$LAST_PULL" ]]; then
+        # For --last-pull, populate PULL_DAYS_FILTER first, then get cutoff
+        local pull_days
+        mapfile -t pull_days < <(find_pull_days "$LAST_PULL")
+        
+        
+        if [[ ${#pull_days[@]} -eq 0 ]]; then
+            print_error "No days with Docker updates found in log file"
+            return 1
+        fi
+        
+        # Store pull days for filtering
+        PULL_DAYS_FILTER=("${pull_days[@]}")
+        
+        
+        # Get cutoff timestamp (oldest day)
+        local oldest_day="${pull_days[-1]}"
+        cutoff_timestamp=$(date -d "$oldest_day 00:00:00" +%s 2>/dev/null)
+        if [[ $? -ne 0 ]]; then
+            print_error "Failed to parse oldest pull day: $oldest_day"
+            return 1
+        fi
+    else
+        cutoff_timestamp=$(calculate_time_cutoff)
+        if [[ $? -ne 0 ]]; then
+            return 1
+        fi
     fi
     
     until_timestamp=$(get_until_timestamp)
@@ -577,7 +715,22 @@ process_log_entries() {
             # Check if this section's timestamp is within range
             current_section_within_range=false
             
-            if [[ -n "$SINCE" || -n "$UNTIL" ]]; then
+            if [[ -n "$LAST_PULL" ]]; then
+                # Handle --last-pull logic: check if this day is in our pull days filter
+                local section_date
+                section_date=$(date -d "@$log_timestamp" +%Y-%m-%d 2>/dev/null)
+                
+                if [[ $? -eq 0 ]]; then
+                    # Check if this date is in our PULL_DAYS_FILTER array
+                    for pull_day in "${PULL_DAYS_FILTER[@]}"; do
+                        if [[ "$section_date" == "$pull_day" ]]; then
+                            current_section_within_range=true
+                            break
+                        fi
+                    done
+                    
+                fi
+            elif [[ -n "$SINCE" || -n "$UNTIL" ]]; then
                 # Handle --since and --until logic
                 if [[ -n "$SINCE" && -n "$UNTIL" ]]; then
                     [[ $log_timestamp -ge $cutoff_timestamp && $log_timestamp -le $until_timestamp ]] && current_section_within_range=true
@@ -586,8 +739,8 @@ process_log_entries() {
                 elif [[ -n "$UNTIL" ]]; then
                     [[ $log_timestamp -le $until_timestamp ]] && current_section_within_range=true
                 fi
-            else
-                # Handle time range logic (hours, days, minutes)
+            elif [[ -z "$LAST_PULL" ]]; then
+                # Handle time range logic (hours, days, minutes) - but NOT for --last-pull
                 [[ $log_timestamp -ge $cutoff_timestamp && $log_timestamp -le $until_timestamp ]] && current_section_within_range=true
             fi
             
@@ -599,6 +752,12 @@ process_log_entries() {
         else
             # This is a regular log line - use current section timestamp
             if [[ -n "$current_section_timestamp" && "$current_section_within_range" == true ]]; then
+                # Skip verbose downloading and extracting progress lines (but keep completion messages)
+                if [[ "$line" =~ ([Dd]ownloading|[Ee]xtracting)[[:space:]]+\[ ]]; then
+                    # Skip downloading/extracting progress lines with progress bars
+                    continue
+                fi
+                
                 ((entry_count++))
                 format_output_line "$entry_count" "$line"
             fi
